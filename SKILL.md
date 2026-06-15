@@ -1,85 +1,173 @@
----
-name: journal-entry-risk-analyzer
-description: Analyze journal entry listings for audit-oriented transaction risk. Use when Codex needs to review JE/JET data, journal entry CSV or Excel exports, general ledger reconciliations, manual entries, suspicious accounting adjustments, risk scoring, testing pool selection, or follow-up testing suggestions.
----
-
 # Journal Entry Risk Analyzer
 
-Use this skill to turn a journal entry listing into an explainable transaction risk analysis. The goal is not to conclude fraud or replace audit judgment; it is to validate the population, identify higher-risk entries, generate a testing pool, and suggest follow-up procedures.
+一个面向 JET（Journal Entry Testing，会计分录测试）场景的交易风险分析项目。
 
-## Core Workflow
+它把传统依赖 Excel 筛选、辅助列和人工经验判断的分录测试流程，抽象成一个可复用的数据分析流程：**数据完整性校验、风险特征工程、可解释风险评分、高风险样本池生成、后续核查建议输出**。
 
-1. **Define the population**
-   - Confirm the reporting period, source system, row count, voucher count, account count, preparer/poster count, total debits, and total credits.
-   - If the user provides a general ledger or trial balance, reconcile journal entry totals by account to the ledger.
-   - State any data limitations before interpreting risk results.
+本项目既是一个可以直接运行的 Python MVP，也是一个 Codex Skill 原型。
 
-2. **Run data quality checks**
-   - Check debit/credit balance.
-   - Check missing values in key fields: date, voucher id, account, debit, credit, description, poster, entry source/type.
-   - Check date and numeric parsing failures.
-   - Check duplicate rows or repeated voucher-account-amount combinations.
-   - Treat failed population checks as a risk to the analysis, not as a transaction exception by itself.
+## 项目背景
 
-3. **Create risk features**
-   Build features across these dimensions:
-   - Time: period end entries, weekend entries, posting after close if close date is known.
-   - Amount: high-value entries, round-number entries, repeated amounts.
-   - Text: blank or vague descriptions, adjustment/reclass/reversal/accrual/write-off/provision/estimate keywords, Chinese equivalents such as 调整, 冲销, 重分类, 暂估, 补提, 计提, 清理, 平账.
-   - Source and people: manual entries, unusual posters, preparer and approver being the same person if available.
-   - Account pattern: unusual debit/credit combinations, large profit-and-loss adjustments, revenue/expense offsets, suspense or intercompany accounts.
+在 JET 会计分录测试中，审计人员通常需要处理从 ERP 或财务系统导出的 journal entry listing。数据量可能从几千条到几十万条不等。
 
-4. **Build a risk profile**
-   Before selecting samples, summarize risk distribution by month, poster, account, keyword, source/type, and risk flag. Use this to explain where risk is concentrated.
+传统做法往往依赖人工在 Excel 中完成：
 
-5. **Score and select the testing pool**
-   - Assign transparent weights to each risk flag.
-   - Produce `risk_score`, `risk_flags`, and `risk_reasons` for every entry.
-   - Select entries by threshold or top-N ranking.
-   - Preserve why each selected entry was included; audit testing needs explainability more than black-box precision.
+- 检查分录总体是否完整；
+- 增加辅助列识别期末、周末、大额、手工分录等特征；
+- 使用透视表查看风险分布；
+- 根据经验筛选高风险样本；
+- 再人工整理每条样本的入选原因和后续测试方向。
 
-6. **Generate follow-up actions**
-   For each selected entry, generate:
-   - Suggested supporting documents to request.
-   - Questions for finance or the entry preparer.
-   - Basic testing steps.
-   - A short conclusion placeholder.
+这个过程存在两个核心痛点：
 
-## Optional LLM Semantic Review
+- **人工筛选效率较低**：大量重复筛选、汇总和样本整理工作依赖人工完成。
+- **分析逻辑复用性较弱**：不同项目中常见风险判断类似，但往往没有沉淀成稳定 SOP。
 
-Static rules find known risk patterns. Add LLM review only for gray-zone entries, not for the full population by default.
+因此，本项目尝试将 JET 中可复用的风险分析逻辑标准化，用脚本和 Skill 的形式沉淀下来。
 
-Good gray-zone candidates:
-- Medium rule score with vague text.
-- Uncommon account combinations.
-- Large entries whose descriptions avoid known keywords but sound like cleanup, true-up, temporary posting, or internal processing.
-- Entries around period end that do not cross the high-risk threshold.
+## 项目目标
 
-Ask the model to return structured fields only:
-- `semantic_risk_label`
-- `semantic_risk_reason`
-- `suggested_follow_up`
-- `confidence`
+本项目不用于自动判断舞弊，也不替代审计人员的专业判断。
 
-Do not present LLM output as a final audit conclusion. Treat it as an additional risk signal for human review.
+它解决的是：
 
-## Scripted Quick Start
+> 在大量会计分录中，哪些交易更值得优先关注？为什么值得关注？下一步应该获取什么资料、询问什么问题？
 
-Use `scripts/analyze_journal_entries.py` for the deterministic MVP workflow:
+最终输出包括：
 
-```powershell
-python scripts/analyze_journal_entries.py --entries assets/sample_journal_entries.csv --ledger assets/sample_general_ledger.csv --out-dir reports
+- 分录总体数据质量检查；
+- 每条分录的风险标签和风险分；
+- 高风险 testing pool；
+- 按风险类型汇总的后续处理建议；
+- 可用于执行跟进的逐条样本明细。
+
+## 分析框架
+
+整个分析流程分为五步。
+
+### 1. 数据完整性校验
+
+先判断输入数据是否可信。
+
+检查内容包括：
+
+- 分录期间是否完整；
+- 借方合计和贷方合计是否平衡；
+- 关键字段是否缺失；
+- 日期和金额格式是否可解析；
+- 是否存在重复凭证或重复分录；
+- 如提供总账数据，按科目汇总序时账并与总账核对。
+
+这一步对应数据分析中的 **data validation**。如果 population 本身不完整，后续风险分析就没有意义。
+
+### 2. 风险特征工程
+
+把审计经验转化成可计算的结构化特征。
+
+当前版本覆盖以下维度：
+
+- **时间特征**：期末入账、周末入账；
+- **金额特征**：高于 P95/P99 的大额分录、大额整数、重复金额；
+- **文本特征**：摘要为空、摘要模糊、命中高风险关键词；
+- **人员/来源特征**：手工分录、制单人与审批人相同；
+- **科目组合特征**：异常借贷科目组合。
+
+### 3. 风险画像分析
+
+在直接选样前，先从整体上观察风险集中在哪里。
+
+报告会汇总：
+
+- 风险标签分布；
+- 过账人风险画像；
+- 月度风险画像；
+- 高风险样本数量和金额占比。
+
+这样可以避免“拍脑袋抽样”，让样本选择有数据支撑。
+
+### 4. 可解释风险评分
+
+每个风险特征都有透明的权重。
+
+脚本会为每条分录生成：
+
+- `risk_score`：风险分；
+- `risk_flags`：命中的风险标签；
+- `risk_reasons`：入选原因解释；
+- `suggested_documents`：建议获取资料；
+- `inquiry_questions`：建议询问问题；
+- `testing_steps`：建议测试方向。
+
+这个项目强调可解释性：不是只输出一个黑盒分数，而是说明每条分录为什么被选中。
+
+### 5. 样本池与后续建议
+
+脚本会根据风险分生成高风险样本池。
+
+同时，报告会按风险类型汇总后续处理建议，例如：
+
+- 期末/手工分录；
+- 高风险关键词；
+- 异常科目组合；
+- 大额/整数/重复金额；
+- 制单审批同人；
+- 摘要模糊或为空；
+- 周末入账。
+
+逐条样本的详细建议保留在 `selected_testing_pool.csv` 中，方便后续执行。
+
+## 项目结构
+
+```text
+journal-entry-risk-analyzer/
+├── SKILL.md
+├── README.md
+├── agents/
+│   └── openai.yaml
+├── assets/
+│   ├── sample_general_ledger.csv
+│   └── sample_journal_entries.csv
+├── references/
+│   └── risk_rules.md
+├── reports/
+│   ├── jet_risk_report.md
+│   ├── risk_scored_entries.csv
+│   └── selected_testing_pool.csv
+└── scripts/
+    └── analyze_journal_entries.py
 ```
 
-Expected outputs:
-- `risk_scored_entries.csv`: full population with risk scores and reasons.
-- `selected_testing_pool.csv`: high-risk samples selected for follow-up.
-- `jet_risk_report.md`: concise analysis report.
+## 快速运行
 
-## Communication Guidance
+在项目根目录运行：
 
-Frame the work as transaction risk analysis:
+```powershell
+python scripts\analyze_journal_entries.py --entries assets\sample_journal_entries.csv --ledger assets\sample_general_ledger.csv --out-dir reports
+```
 
-> This workflow converts a manual JET process into a reusable data analysis pipeline: population validation, risk feature engineering, risk profiling, explainable scoring, and follow-up testing suggestions.
+运行后会生成：
 
-Avoid claiming the tool detects fraud. Say it prioritizes entries for review, explains why each entry was selected, and standardizes the next-step testing workflow.
+- `reports/jet_risk_report.md`：中文风险分析报告；
+- `reports/risk_scored_entries.csv`：全量分录风险评分结果；
+- `reports/selected_testing_pool.csv`：高风险样本池及逐条后续建议。
+
+## 样例输出说明
+
+当前样例数据包含 15 条会计分录。
+
+系统会识别以下风险信号：
+
+- 手工分录；
+- 期末入账；
+- 周末入账；
+- 大额整数；
+- 摘要模糊；
+- 命中调整/重分类/冲销/计提等关键词；
+- 异常科目组合；
+- 制单人与审批人为同一人。
+
+报告中会展示高风险样本池，并按风险类型输出后续处理建议。
+
+
+
+本项目是学习和流程自动化原型，不提供最终审计结论，也不能替代支持性文件检查、访谈程序和专业判断。
