@@ -1,0 +1,4 @@
+interface:
+  display_name: "Journal Entry Risk Analyzer"
+  short_description: "Risk-score journal entries"
+  default_prompt: "Use $journal-entry-risk-analyzer to analyze a journal entry listing, generate a high-risk testing pool, and suggest follow-up procedures."

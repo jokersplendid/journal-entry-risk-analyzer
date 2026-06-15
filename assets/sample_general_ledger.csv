@@ -1,0 +1,15 @@
+account,gl_debit,gl_credit
+Cash,215871.05,142190.55
+Revenue,1500000,1637871.05
+Expense,1095000,1000000
+Accrued Liabilities,900000,45000
+Other Receivables,500000,1300000
+Inventory,38642.12,0
+Accounts Payable,42190.55,38642.12
+Accounts Receivable,0,78000
+Provision Expense,300000,0
+Provision Liability,0,300000
+Prepaid Expense,0,250000
+Intercompany Receivable,600000,0
+Other Expenses,100000,0
+Other Income,0,500000
